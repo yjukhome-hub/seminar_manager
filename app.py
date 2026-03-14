@@ -37,7 +37,7 @@ if menu == "📝 회의록 및 내역 작성":
         c1, c2 = st.columns(2)
         date = c1.date_input("회의 날짜", datetime.now())
         location = c2.text_input("장소", "연구회 세미나실")
-        title = st.text_input("세미나 주제", placeholder="예: 제 5차 피부미용 학술 세미나")
+        title = st.text_area("세미나 주제", placeholder="예: 제 5차 피부미용 학술 세미나\n(Shift+Enter로 줄바꿈)", height=100)
         attendees = st.text_area("참석자 명단", placeholder="원장님 외 0명")
         doc_files = st.file_uploader(
             "참석 사인 / 의결 동의안 스캔본 첨부 (JPG, PNG, PDF · 여러 파일 가능)",
