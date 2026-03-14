@@ -22,6 +22,9 @@ def save_data(df):
 if 'df' not in st.session_state:
     st.session_state['df'] = load_data()
 
+if 'finance_rows' not in st.session_state:
+    st.session_state['finance_rows'] = [{"유형": "지출", "항목": "", "금액": 0, "비고": "", "스캔파일": None}]
+
 st.title("🏛️ 대한 첨단재생의료 연구회 세미나 회의록 및 재무관리")
 
 menu = st.sidebar.radio("메뉴", ["📝 회의록 및 내역 작성", "📜 회의록 아카이브", "💰 재무 엑셀 리포트"])
@@ -42,29 +45,50 @@ if menu == "📝 회의록 및 내역 작성":
         decisions = st.text_area("결정 사항 (Decisions)")
 
     with st.expander("3. 수입 및 지출 내역", expanded=True):
-        c3, c4, c5 = st.columns([1, 1, 2])
-        entry_type = c3.selectbox("구분", ["수입", "지출"])
-        category = c4.text_input("항목명", placeholder="회비 / 강사비 / 식대 등")
-        amount = c5.number_input("금액(원)", min_value=0, step=1000)
-        note = st.text_input("비고 (입금자명 등)")
-        scan_file = st.file_uploader("스캔 이미지 첨부 (JPG, PNG, PDF)", type=["jpg", "jpeg", "png", "pdf"])
+        updated_rows = []
+        for i, row in enumerate(st.session_state['finance_rows']):
+            st.markdown(f"**항목 {i+1}**")
+            c3, c4, c5 = st.columns([1, 1, 2])
+            etype    = c3.selectbox("구분", ["수입", "지출"],
+                                    index=["수입", "지출"].index(row["유형"]) if row["유형"] in ["수입", "지출"] else 1,
+                                    key=f"etype_{i}")
+            cat      = c4.text_input("항목명", value=row["항목"], placeholder="회비 / 강사비 / 식대 등", key=f"cat_{i}")
+            amt      = c5.number_input("금액(원)", min_value=0, step=1000, value=row["금액"], key=f"amt_{i}")
+            note_val = st.text_input("비고 (입금자명 등)", value=row["비고"], key=f"note_{i}")
+            scan_f   = st.file_uploader("스캔 이미지 첨부 (JPG, PNG, PDF)", type=["jpg", "jpeg", "png", "pdf"], key=f"scan_{i}")
+            updated_rows.append({"유형": etype, "항목": cat, "금액": amt, "비고": note_val, "스캔파일": scan_f})
+            if i < len(st.session_state['finance_rows']) - 1:
+                st.divider()
+
+        st.session_state['finance_rows'] = updated_rows
+
+        bc1, bc2 = st.columns(2)
+        if bc1.button("➕ 항목 추가", use_container_width=True):
+            st.session_state['finance_rows'].append({"유형": "지출", "항목": "", "금액": 0, "비고": "", "스캔파일": None})
+            st.rerun()
+        if bc2.button("➖ 마지막 항목 삭제", use_container_width=True, disabled=len(st.session_state['finance_rows']) <= 1):
+            st.session_state['finance_rows'].pop()
+            st.rerun()
 
     if st.button("💾 회의록 및 내역 저장하기", use_container_width=True):
-        scan_filename = ""
-        if scan_file is not None:
-            scan_filename = f"{date.strftime('%Y%m%d')}_{scan_file.name}"
-            with open(os.path.join(SCANS_DIR, scan_filename), "wb") as f:
-                f.write(scan_file.read())
-
-        new_data = {
-            "날짜": date.strftime("%Y-%m-%d"), "주제": title, "장소": location,
-            "참석인원": attendees, "안건": agenda, "결정사항": decisions,
-            "유형": entry_type, "항목": category, "금액": amount, "비고": note,
-            "스캔파일": scan_filename
-        }
-        st.session_state['df'] = pd.concat([st.session_state['df'], pd.DataFrame([new_data])], ignore_index=True)
+        new_rows = []
+        for row in st.session_state['finance_rows']:
+            scan_filename = ""
+            if row["스캔파일"] is not None:
+                scan_filename = f"{date.strftime('%Y%m%d')}_{row['스캔파일'].name}"
+                with open(os.path.join(SCANS_DIR, scan_filename), "wb") as f:
+                    f.write(row["스캔파일"].read())
+            new_rows.append({
+                "날짜": date.strftime("%Y-%m-%d"), "주제": title, "장소": location,
+                "참석인원": attendees, "안건": agenda, "결정사항": decisions,
+                "유형": row["유형"], "항목": row["항목"], "금액": row["금액"],
+                "비고": row["비고"], "스캔파일": scan_filename
+            })
+        st.session_state['df'] = pd.concat([st.session_state['df'], pd.DataFrame(new_rows)], ignore_index=True)
         save_data(st.session_state['df'])
+        st.session_state['finance_rows'] = [{"유형": "지출", "항목": "", "금액": 0, "비고": "", "스캔파일": None}]
         st.success("회의록과 내역이 성공적으로 기록되었습니다!")
+        st.rerun()
 
 # 2. 회의록 아카이브 (문서 형태 조회)
 elif menu == "📜 회의록 아카이브":
