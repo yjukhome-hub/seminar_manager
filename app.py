@@ -8,11 +8,13 @@ st.set_page_config(page_title="연구회 세미나 매니저", layout="wide")
 
 # 데이터 저장 파일
 DB_FILE = "seminar_combined_data.csv"
+SCANS_DIR = "scans"
+os.makedirs(SCANS_DIR, exist_ok=True)
 
 def load_data():
     if os.path.exists(DB_FILE):
         return pd.read_csv(DB_FILE)
-    return pd.DataFrame(columns=["날짜", "주제", "장소", "참석인원", "안건", "결정사항", "유형", "항목", "금액", "비고"])
+    return pd.DataFrame(columns=["날짜", "주제", "장소", "참석인원", "안건", "결정사항", "유형", "항목", "금액", "비고", "스캔파일"])
 
 def save_data(df):
     df.to_csv(DB_FILE, index=False, encoding='utf-8-sig')
@@ -45,12 +47,20 @@ if menu == "📝 회의록 및 내역 작성":
         category = c4.text_input("항목명", placeholder="회비 / 강사비 / 식대 등")
         amount = c5.number_input("금액(원)", min_value=0, step=1000)
         note = st.text_input("비고 (입금자명 등)")
+        scan_file = st.file_uploader("스캔 이미지 첨부 (JPG, PNG, PDF)", type=["jpg", "jpeg", "png", "pdf"])
 
     if st.button("💾 회의록 및 내역 저장하기", use_container_width=True):
+        scan_filename = ""
+        if scan_file is not None:
+            scan_filename = f"{date.strftime('%Y%m%d')}_{scan_file.name}"
+            with open(os.path.join(SCANS_DIR, scan_filename), "wb") as f:
+                f.write(scan_file.read())
+
         new_data = {
             "날짜": date.strftime("%Y-%m-%d"), "주제": title, "장소": location,
             "참석인원": attendees, "안건": agenda, "결정사항": decisions,
-            "유형": entry_type, "항목": category, "금액": amount, "비고": note
+            "유형": entry_type, "항목": category, "금액": amount, "비고": note,
+            "스캔파일": scan_filename
         }
         st.session_state['df'] = pd.concat([st.session_state['df'], pd.DataFrame([new_data])], ignore_index=True)
         save_data(st.session_state['df'])
@@ -68,6 +78,12 @@ elif menu == "📜 회의록 아카이브":
                 st.info(f"📍 **장소:** {row['장소']}  |  👥 **참석자:** {row['참석인원']}")
                 st.write(f"**📝 안건:** {row['안건']}")
                 st.write(f"**✅ 결정사항:** {row['결정사항']}")
+                if pd.notna(row.get("스캔파일")) and row.get("스캔파일"):
+                    fpath = os.path.join(SCANS_DIR, row["스캔파일"])
+                    if os.path.exists(fpath) and row["스캔파일"].lower().endswith((".jpg", ".jpeg", ".png")):
+                        st.image(fpath, caption=row["스캔파일"], width=300)
+                    elif os.path.exists(fpath):
+                        st.caption(f"📎 첨부파일: {row['스캔파일']}")
                 st.divider()
     else:
         st.info("기록된 회의록이 없습니다.")
