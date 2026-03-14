@@ -14,7 +14,7 @@ os.makedirs(SCANS_DIR, exist_ok=True)
 def load_data():
     if os.path.exists(DB_FILE):
         return pd.read_csv(DB_FILE)
-    return pd.DataFrame(columns=["날짜", "주제", "장소", "참석인원", "안건", "결정사항", "유형", "항목", "금액", "비고", "스캔파일"])
+    return pd.DataFrame(columns=["날짜", "주제", "장소", "참석인원", "안건", "결정사항", "유형", "항목", "금액", "비고", "스캔파일", "첨부서류"])
 
 def save_data(df):
     df.to_csv(DB_FILE, index=False, encoding='utf-8-sig')
@@ -39,6 +39,12 @@ if menu == "📝 회의록 및 내역 작성":
         location = c2.text_input("장소", "연구회 세미나실")
         title = st.text_input("세미나 주제", placeholder="예: 제 5차 피부미용 학술 세미나")
         attendees = st.text_area("참석자 명단", placeholder="원장님 외 0명")
+        doc_files = st.file_uploader(
+            "참석 사인 / 의결 동의안 스캔본 첨부 (JPG, PNG, PDF · 여러 파일 가능)",
+            type=["jpg", "jpeg", "png", "pdf"],
+            accept_multiple_files=True,
+            key="doc_files"
+        )
 
     with st.expander("2. 회의 및 결정 사항", expanded=True):
         agenda = st.text_area("회의 안건 (Agenda)")
@@ -71,6 +77,15 @@ if menu == "📝 회의록 및 내역 작성":
             st.rerun()
 
     if st.button("💾 회의록 및 내역 저장하기", use_container_width=True):
+        # 첨부 서류 저장 (여러 파일)
+        doc_filenames = []
+        for df_file in (doc_files or []):
+            fname = f"{date.strftime('%Y%m%d')}_doc_{df_file.name}"
+            with open(os.path.join(SCANS_DIR, fname), "wb") as f:
+                f.write(df_file.read())
+            doc_filenames.append(fname)
+        doc_filenames_str = "|".join(doc_filenames)
+
         new_rows = []
         for row in st.session_state['finance_rows']:
             scan_filename = ""
@@ -82,7 +97,8 @@ if menu == "📝 회의록 및 내역 작성":
                 "날짜": date.strftime("%Y-%m-%d"), "주제": title, "장소": location,
                 "참석인원": attendees, "안건": agenda, "결정사항": decisions,
                 "유형": row["유형"], "항목": row["항목"], "금액": row["금액"],
-                "비고": row["비고"], "스캔파일": scan_filename
+                "비고": row["비고"], "스캔파일": scan_filename,
+                "첨부서류": doc_filenames_str
             })
         st.session_state['df'] = pd.concat([st.session_state['df'], pd.DataFrame(new_rows)], ignore_index=True)
         save_data(st.session_state['df'])
@@ -110,12 +126,17 @@ elif menu == "📜 회의록 아카이브":
                 if st.session_state["editing_idx"] == orig_idx:
                     with st.form(key=f"edit_form_{orig_idx}"):
                         ec1, ec2 = st.columns(2)
-                        new_date     = ec1.text_input("날짜", value=row["날짜"])
-                        new_location = ec2.text_input("장소", value=str(row["장소"]))
-                        new_title    = st.text_input("주제", value=str(row["주제"]))
-                        new_attendees= st.text_area("참석자 명단", value=str(row["참석인원"]))
-                        new_agenda   = st.text_area("안건", value=str(row["안건"]))
-                        new_decisions= st.text_area("결정사항", value=str(row["결정사항"]))
+                        new_date      = ec1.text_input("날짜", value=row["날짜"])
+                        new_location  = ec2.text_input("장소", value=str(row["장소"]))
+                        new_title     = st.text_input("주제", value=str(row["주제"]))
+                        new_attendees = st.text_area("참석자 명단", value=str(row["참석인원"]))
+                        new_doc_files = st.file_uploader(
+                            "첨부 서류 교체 (사인 / 의결 동의안 · 여러 파일 가능, 비워두면 기존 유지)",
+                            type=["jpg", "jpeg", "png", "pdf"],
+                            accept_multiple_files=True,
+                        )
+                        new_agenda    = st.text_area("안건", value=str(row["안건"]))
+                        new_decisions = st.text_area("결정사항", value=str(row["결정사항"]))
 
                         fc1, fc2 = st.columns(2)
                         save_btn   = fc1.form_submit_button("💾 저장", use_container_width=True, type="primary")
@@ -128,6 +149,14 @@ elif menu == "📜 회의록 아카이브":
                         st.session_state['df'].loc[orig_idx, "참석인원"] = new_attendees
                         st.session_state['df'].loc[orig_idx, "안건"]     = new_agenda
                         st.session_state['df'].loc[orig_idx, "결정사항"] = new_decisions
+                        if new_doc_files:
+                            saved = []
+                            for f in new_doc_files:
+                                fname = f"{new_date.replace('-', '')}_doc_{f.name}"
+                                with open(os.path.join(SCANS_DIR, fname), "wb") as fp:
+                                    fp.write(f.read())
+                                saved.append(fname)
+                            st.session_state['df'].loc[orig_idx, "첨부서류"] = "|".join(saved)
                         save_data(st.session_state['df'])
                         st.session_state["editing_idx"] = None
                         st.success("수정되었습니다.")
@@ -141,12 +170,29 @@ elif menu == "📜 회의록 아카이브":
                     st.info(f"📍 **장소:** {row['장소']}  |  👥 **참석자:** {row['참석인원']}")
                     st.write(f"**📝 안건:** {row['안건']}")
                     st.write(f"**✅ 결정사항:** {row['결정사항']}")
+
+                    # 첨부 서류 (사인, 의결 동의안 등)
+                    doc_val = row.get("첨부서류", "")
+                    if pd.notna(doc_val) and doc_val:
+                        st.markdown("**📎 첨부 서류 (사인 / 의결 동의안)**")
+                        doc_cols = st.columns(3)
+                        for di, fname in enumerate(str(doc_val).split("|")):
+                            if not fname:
+                                continue
+                            fpath = os.path.join(SCANS_DIR, fname)
+                            if os.path.exists(fpath) and fname.lower().endswith((".jpg", ".jpeg", ".png")):
+                                doc_cols[di % 3].image(fpath, caption=fname, use_container_width=True)
+                            elif os.path.exists(fpath):
+                                doc_cols[di % 3].caption(f"📄 {fname}")
+
+                    # 수입/지출 스캔파일
                     if pd.notna(row.get("스캔파일")) and row.get("스캔파일"):
                         fpath = os.path.join(SCANS_DIR, row["스캔파일"])
                         if os.path.exists(fpath) and row["스캔파일"].lower().endswith((".jpg", ".jpeg", ".png")):
                             st.image(fpath, caption=row["스캔파일"], width=300)
                         elif os.path.exists(fpath):
-                            st.caption(f"📎 첨부파일: {row['스캔파일']}")
+                            st.caption(f"📎 영수증: {row['스캔파일']}")
+
                     if st.button("✏️ 수정", key=f"edit_btn_{orig_idx}"):
                         st.session_state["editing_idx"] = orig_idx
                         st.rerun()
