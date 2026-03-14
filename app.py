@@ -93,6 +93,12 @@ elif menu == "💰 재무 엑셀 리포트":
     st.subheader("📊 수입 및 지출 재무 제표 (Excel)")
     df = st.session_state['df']
 
+    # 이월금 입력
+    with st.expander("🏦 기초 이월금 설정", expanded=True):
+        c_carry, c_note = st.columns([1, 2])
+        carryover = c_carry.number_input("전기 이월금 (원)", min_value=0, step=1000, value=0)
+        c_note.caption("이전 회계 기간에서 넘어온 잔액을 입력하세요.")
+
     if not df.empty:
         # 수입 테이블
         st.write("### 🟢 수입 내역 (Incomes)")
@@ -104,14 +110,16 @@ elif menu == "💰 재무 엑셀 리포트":
         expense_df = df[df["유형"] == "지출"][["날짜", "항목", "금액", "비고"]]
         st.table(expense_df)
 
-        # 통계 요약
+        # 통계 요약 (이월금 반영)
         total_in = income_df["금액"].sum()
         total_out = expense_df["금액"].sum()
+        balance = carryover + total_in - total_out
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("총 수입", f"{total_in:,}원")
-        c2.metric("총 지출", f"{total_out:,}원")
-        c3.metric("현재 잔액", f"{total_in - total_out:,}원")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("전기 이월금", f"{carryover:,}원")
+        c2.metric("총 수입", f"{total_in:,}원")
+        c3.metric("총 지출", f"{total_out:,}원")
+        c4.metric("현재 잔액", f"{balance:,}원", delta=f"{balance - carryover:,}원")
 
         # 엑셀 다운로드 버튼
         csv = df.to_csv(index=False).encode('utf-8-sig')
