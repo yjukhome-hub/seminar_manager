@@ -4,7 +4,7 @@ from datetime import datetime
 import os
 
 # 페이지 설정
-st.set_page_config(page_title="연구회 세미나 매니저", layout="wide")
+st.set_page_config(page_title="대한 첨단재생의료 연구회", layout="wide")
 
 # 데이터 저장 파일
 DB_FILE = "seminar_combined_data.csv"
@@ -22,7 +22,7 @@ def save_data(df):
 if 'df' not in st.session_state:
     st.session_state['df'] = load_data()
 
-st.title("🏛️ 연구회 세미나 회의록 및 재무관리")
+st.title("🏛️ 대한 첨단재생의료 연구회 세미나 회의록 및 재무관리")
 
 menu = st.sidebar.radio("메뉴", ["📝 회의록 및 내역 작성", "📜 회의록 아카이브", "💰 재무 엑셀 리포트"])
 
@@ -70,20 +70,63 @@ if menu == "📝 회의록 및 내역 작성":
 elif menu == "📜 회의록 아카이브":
     st.subheader("📚 역대 회의록 기록")
     df = st.session_state['df']
+
+    if "editing_idx" not in st.session_state:
+        st.session_state["editing_idx"] = None
+
     if not df.empty:
-        unique_seminars = df.drop_duplicates(subset=["날짜", "주제"])
-        for _, row in unique_seminars.iterrows():
+        unique_seminars = df.drop_duplicates(subset=["날짜", "주제"]).reset_index()
+
+        for pos, row in unique_seminars.iterrows():
+            orig_idx = row["index"]
             with st.container():
                 st.markdown(f"### {row['날짜']} | {row['주제']}")
-                st.info(f"📍 **장소:** {row['장소']}  |  👥 **참석자:** {row['참석인원']}")
-                st.write(f"**📝 안건:** {row['안건']}")
-                st.write(f"**✅ 결정사항:** {row['결정사항']}")
-                if pd.notna(row.get("스캔파일")) and row.get("스캔파일"):
-                    fpath = os.path.join(SCANS_DIR, row["스캔파일"])
-                    if os.path.exists(fpath) and row["스캔파일"].lower().endswith((".jpg", ".jpeg", ".png")):
-                        st.image(fpath, caption=row["스캔파일"], width=300)
-                    elif os.path.exists(fpath):
-                        st.caption(f"📎 첨부파일: {row['스캔파일']}")
+
+                # 수정 모드
+                if st.session_state["editing_idx"] == orig_idx:
+                    with st.form(key=f"edit_form_{orig_idx}"):
+                        ec1, ec2 = st.columns(2)
+                        new_date     = ec1.text_input("날짜", value=row["날짜"])
+                        new_location = ec2.text_input("장소", value=str(row["장소"]))
+                        new_title    = st.text_input("주제", value=str(row["주제"]))
+                        new_attendees= st.text_area("참석자 명단", value=str(row["참석인원"]))
+                        new_agenda   = st.text_area("안건", value=str(row["안건"]))
+                        new_decisions= st.text_area("결정사항", value=str(row["결정사항"]))
+
+                        fc1, fc2 = st.columns(2)
+                        save_btn   = fc1.form_submit_button("💾 저장", use_container_width=True, type="primary")
+                        cancel_btn = fc2.form_submit_button("✖ 취소", use_container_width=True)
+
+                    if save_btn:
+                        st.session_state['df'].loc[orig_idx, "날짜"]     = new_date
+                        st.session_state['df'].loc[orig_idx, "장소"]     = new_location
+                        st.session_state['df'].loc[orig_idx, "주제"]     = new_title
+                        st.session_state['df'].loc[orig_idx, "참석인원"] = new_attendees
+                        st.session_state['df'].loc[orig_idx, "안건"]     = new_agenda
+                        st.session_state['df'].loc[orig_idx, "결정사항"] = new_decisions
+                        save_data(st.session_state['df'])
+                        st.session_state["editing_idx"] = None
+                        st.success("수정되었습니다.")
+                        st.rerun()
+                    if cancel_btn:
+                        st.session_state["editing_idx"] = None
+                        st.rerun()
+
+                # 조회 모드
+                else:
+                    st.info(f"📍 **장소:** {row['장소']}  |  👥 **참석자:** {row['참석인원']}")
+                    st.write(f"**📝 안건:** {row['안건']}")
+                    st.write(f"**✅ 결정사항:** {row['결정사항']}")
+                    if pd.notna(row.get("스캔파일")) and row.get("스캔파일"):
+                        fpath = os.path.join(SCANS_DIR, row["스캔파일"])
+                        if os.path.exists(fpath) and row["스캔파일"].lower().endswith((".jpg", ".jpeg", ".png")):
+                            st.image(fpath, caption=row["스캔파일"], width=300)
+                        elif os.path.exists(fpath):
+                            st.caption(f"📎 첨부파일: {row['스캔파일']}")
+                    if st.button("✏️ 수정", key=f"edit_btn_{orig_idx}"):
+                        st.session_state["editing_idx"] = orig_idx
+                        st.rerun()
+
                 st.divider()
     else:
         st.info("기록된 회의록이 없습니다.")
