@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import os
-from case_report_generator import stream_case_report
 
 # 페이지 설정
 st.set_page_config(page_title="대한 첨단재생의료 연구회", layout="wide")
@@ -28,7 +27,7 @@ if 'finance_rows' not in st.session_state:
 
 st.title("🏛️ 대한 첨단재생의료 연구회 세미나 회의록 및 재무관리")
 
-menu = st.sidebar.radio("메뉴", ["📝 회의록 및 내역 작성", "📜 회의록 아카이브", "💰 재무 엑셀 리포트", "🏥 AI 케이스 보고서 생성기"])
+menu = st.sidebar.radio("메뉴", ["📝 회의록 및 내역 작성", "📜 회의록 아카이브", "💰 재무 엑셀 리포트"])
 
 # 1. 작성 섹션 (문서 형태)
 if menu == "📝 회의록 및 내역 작성":
@@ -78,7 +77,6 @@ if menu == "📝 회의록 및 내역 작성":
             st.rerun()
 
     if st.button("💾 회의록 및 내역 저장하기", use_container_width=True):
-        # 첨부 서류 저장 (여러 파일)
         doc_filenames = []
         for df_file in (doc_files or []):
             fname = f"{date.strftime('%Y%m%d')}_doc_{df_file.name}"
@@ -123,7 +121,6 @@ elif menu == "📜 회의록 아카이브":
             with st.container():
                 st.markdown(f"### {row['날짜']} | {row['주제']}")
 
-                # 수정 모드
                 if st.session_state["editing_idx"] == orig_idx:
                     with st.form(key=f"edit_form_{orig_idx}"):
                         ec1, ec2 = st.columns(2)
@@ -166,13 +163,11 @@ elif menu == "📜 회의록 아카이브":
                         st.session_state["editing_idx"] = None
                         st.rerun()
 
-                # 조회 모드
                 else:
                     st.info(f"📍 **장소:** {row['장소']}  |  👥 **참석자:** {row['참석인원']}")
                     st.write(f"**📝 안건:** {row['안건']}")
                     st.write(f"**✅ 결정사항:** {row['결정사항']}")
 
-                    # 첨부 서류 (사인, 의결 동의안 등)
                     doc_val = row.get("첨부서류", "")
                     if pd.notna(doc_val) and doc_val:
                         st.markdown("**📎 첨부 서류 (사인 / 의결 동의안)**")
@@ -186,7 +181,6 @@ elif menu == "📜 회의록 아카이브":
                             elif os.path.exists(fpath):
                                 doc_cols[di % 3].caption(f"📄 {fname}")
 
-                    # 수입/지출 스캔파일
                     if pd.notna(row.get("스캔파일")) and row.get("스캔파일"):
                         fpath = os.path.join(SCANS_DIR, row["스캔파일"])
                         if os.path.exists(fpath) and row["스캔파일"].lower().endswith((".jpg", ".jpeg", ".png")):
@@ -207,24 +201,20 @@ elif menu == "💰 재무 엑셀 리포트":
     st.subheader("📊 수입 및 지출 재무 제표 (Excel)")
     df = st.session_state['df']
 
-    # 이월금 입력
     with st.expander("🏦 기초 이월금 설정", expanded=True):
         c_carry, c_note = st.columns([1, 2])
         carryover = c_carry.number_input("전기 이월금 (원)", min_value=0, step=1000, value=0)
         c_note.caption("이전 회계 기간에서 넘어온 잔액을 입력하세요.")
 
     if not df.empty:
-        # 수입 테이블
         st.write("### 🟢 수입 내역 (Incomes)")
         income_df = df[df["유형"] == "수입"][["날짜", "항목", "금액", "비고"]]
         st.table(income_df)
 
-        # 지출 테이블
         st.write("### 🔴 지출 내역 (Expenses)")
         expense_df = df[df["유형"] == "지출"][["날짜", "항목", "금액", "비고"]]
         st.table(expense_df)
 
-        # 통계 요약 (이월금 반영)
         total_in = income_df["금액"].sum()
         total_out = expense_df["금액"].sum()
         balance = carryover + total_in - total_out
@@ -235,115 +225,7 @@ elif menu == "💰 재무 엑셀 리포트":
         c3.metric("총 지출", f"{total_out:,}원")
         c4.metric("현재 잔액", f"{balance:,}원", delta=f"{balance - carryover:,}원")
 
-        # 엑셀 다운로드 버튼
         csv = df.to_csv(index=False).encode('utf-8-sig')
         st.download_button("📤 전체 내역 엑셀로 내보내기", csv, "seminar_finance_report.csv", "text/csv")
     else:
         st.info("금융 내역이 없습니다.")
-
-# 4. AI 케이스 보고서 생성기
-elif menu == "🏥 AI 케이스 보고서 생성기":
-    st.subheader("🤖 예라인 의원 AI 케이스 보고서 생성기")
-    st.caption("원장님의 진료 철학과 글쓰기 스타일을 반영하여 케이스 보고서를 자동으로 생성합니다.")
-
-    with st.expander("1. 환자 기본 정보", expanded=True):
-        c1, c2 = st.columns(2)
-        patient_age = c1.text_input("나이", placeholder="예: 40대 후반")
-        patient_gender = c2.selectbox("성별", ["여성", "남성"])
-        chief_complaint = st.text_area(
-            "주요 고민 및 증상",
-            placeholder="예: 만성 주사피부염으로 피부가 얇고 매우 붉음. 반복된 레이저 시술로 장벽이 무너진 상태.",
-            height=100,
-        )
-
-    with st.expander("2. 원장님의 진단", expanded=True):
-        diagnosis = st.text_area(
-            "해부학적/구조적 진단",
-            placeholder="예: 진피층의 구조적 붕괴와 혈관 과확장. 안면부 근육 과긴장으로 인한 순환 저하.",
-            height=120,
-        )
-
-    with st.expander("3. 시술 내용", expanded=True):
-        treatment = st.text_area(
-            "시술 부위 및 방법",
-            placeholder="예: 자가세포 재생술을 통한 진피 재건 + 경추부 근육 이완을 통한 순환 개선(밸런톡스 활용).",
-            height=120,
-        )
-
-    with st.expander("4. 추가 참고 사항 (선택)", expanded=False):
-        additional_notes = st.text_area(
-            "추가 지침 또는 강조 사항",
-            placeholder="예: 전후 사진의 차이를 서술할 것. 특정 비유나 표현 스타일을 사용할 것.",
-            height=100,
-        )
-
-    st.divider()
-
-    api_key = st.text_input(
-        "Anthropic API 키",
-        type="password",
-        placeholder="sk-ant-...",
-        help="ANTHROPIC_API_KEY 환경 변수가 설정되어 있으면 비워도 됩니다.",
-    )
-
-    if "generated_report" not in st.session_state:
-        st.session_state["generated_report"] = ""
-
-    col_gen, col_clear = st.columns([3, 1])
-    generate_btn = col_gen.button("✨ 케이스 보고서 생성하기", use_container_width=True, type="primary")
-    clear_btn = col_clear.button("🗑️ 초기화", use_container_width=True)
-
-    if clear_btn:
-        st.session_state["generated_report"] = ""
-        st.rerun()
-
-    if generate_btn:
-        if not patient_age or not chief_complaint or not diagnosis or not treatment:
-            st.warning("나이, 주요 고민, 진단, 시술 내용은 필수 입력 항목입니다.")
-        else:
-            import anthropic as _anthropic
-            import os
-
-            if api_key:
-                os.environ["ANTHROPIC_API_KEY"] = api_key
-
-            if not os.environ.get("ANTHROPIC_API_KEY"):
-                st.error("Anthropic API 키를 입력하거나 환경 변수 ANTHROPIC_API_KEY를 설정해 주세요.")
-            else:
-                st.session_state["generated_report"] = ""
-                report_placeholder = st.empty()
-                status = st.status("케이스 보고서를 생성하고 있습니다...", expanded=True)
-                try:
-                    collected = ""
-                    for chunk in stream_case_report(
-                        patient_age=patient_age,
-                        patient_gender=patient_gender,
-                        chief_complaint=chief_complaint,
-                        diagnosis=diagnosis,
-                        treatment=treatment,
-                        additional_notes=additional_notes,
-                    ):
-                        collected += chunk
-                        report_placeholder.markdown(collected)
-                    st.session_state["generated_report"] = collected
-                    status.update(label="✅ 생성 완료!", state="complete", expanded=False)
-                except _anthropic.AuthenticationError:
-                    status.update(label="❌ 오류 발생", state="error", expanded=False)
-                    st.error("API 키가 유효하지 않습니다. 올바른 Anthropic API 키를 입력해 주세요.")
-                except _anthropic.APIConnectionError:
-                    status.update(label="❌ 오류 발생", state="error", expanded=False)
-                    st.error("네트워크 연결 오류가 발생했습니다. 인터넷 연결을 확인해 주세요.")
-                except Exception as e:
-                    status.update(label="❌ 오류 발생", state="error", expanded=False)
-                    st.error(f"오류가 발생했습니다: {str(e)}")
-
-    if st.session_state["generated_report"]:
-        st.divider()
-        st.markdown("### 📋 생성된 케이스 보고서")
-        st.markdown(st.session_state["generated_report"])
-        st.download_button(
-            label="📥 보고서 다운로드 (.txt)",
-            data=st.session_state["generated_report"].encode("utf-8"),
-            file_name=f"케이스보고서_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-            mime="text/plain",
-        )
