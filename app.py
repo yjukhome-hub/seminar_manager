@@ -1,231 +1,411 @@
-import streamlit as st
-import pandas as pd
-from datetime import datetime
+"""
+예라인 의원 AI 케이스 보고서 생성기
+Streamlit 웹앱
+"""
+
+from __future__ import annotations
+
+import json
 import os
 
+import streamlit as st
+
+from case_storage import CATEGORIES, add_case, delete_case, load_cases, update_case
+from case_report_generator import (
+    generate_claude_report,
+    generate_gemini_report,
+    generate_openai_report,
+    merge_reports,
+)
+
+# ---------------------------------------------------------------------------
 # 페이지 설정
-st.set_page_config(page_title="대한 첨단재생의료 연구회", layout="wide")
+# ---------------------------------------------------------------------------
 
-# 데이터 저장 파일
-DB_FILE = "seminar_combined_data.csv"
-SCANS_DIR = "scans"
-os.makedirs(SCANS_DIR, exist_ok=True)
+st.set_page_config(
+    page_title="예라인 의원 AI 케이스 보고서",
+    page_icon="🏥",
+    layout="wide",
+)
 
-def load_data():
-    if os.path.exists(DB_FILE):
-        return pd.read_csv(DB_FILE)
-    return pd.DataFrame(columns=["날짜", "주제", "장소", "참석인원", "안건", "결정사항", "유형", "항목", "금액", "비고", "스캔파일", "첨부서류"])
+# ---------------------------------------------------------------------------
+# API 키 저장/불러오기
+# ---------------------------------------------------------------------------
 
-def save_data(df):
-    df.to_csv(DB_FILE, index=False, encoding='utf-8-sig')
+API_KEYS_FILE = "api_keys.json"
 
-if 'df' not in st.session_state:
-    st.session_state['df'] = load_data()
 
-if 'finance_rows' not in st.session_state:
-    st.session_state['finance_rows'] = [{"유형": "지출", "항목": "", "금액": 0, "비고": "", "스캔파일": None}]
+def load_api_keys() -> dict:
+    if os.path.exists(API_KEYS_FILE):
+        with open(API_KEYS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"anthropic": "", "openai": "", "google": ""}
 
-st.title("🏛️ 대한 첨단재생의료 연구회 세미나 회의록 및 재무관리")
 
-menu = st.sidebar.radio("메뉴", ["📝 회의록 및 내역 작성", "📜 회의록 아카이브", "💰 재무 엑셀 리포트"])
+def save_api_keys(keys: dict) -> None:
+    with open(API_KEYS_FILE, "w", encoding="utf-8") as f:
+        json.dump(keys, f, ensure_ascii=False, indent=2)
 
-# 1. 작성 섹션 (문서 형태)
-if menu == "📝 회의록 및 내역 작성":
-    st.subheader("✍️ 정기 세미나 회의록 작성")
 
-    with st.expander("1. 회의 기본 정보", expanded=True):
-        c1, c2 = st.columns(2)
-        date = c1.date_input("회의 날짜", datetime.now())
-        location = c2.text_input("장소", "연구회 세미나실")
-        title = st.text_area("세미나 주제", placeholder="예: 제 5차 피부미용 학술 세미나\n(Shift+Enter로 줄바꿈)", height=100)
-        attendees = st.text_area("참석자 명단", placeholder="원장님 외 0명")
-        doc_files = st.file_uploader(
-            "참석 사인 / 의결 동의안 스캔본 첨부 (JPG, PNG, PDF · 여러 파일 가능)",
-            type=["jpg", "jpeg", "png", "pdf"],
-            accept_multiple_files=True,
-            key="doc_files"
+if "api_keys" not in st.session_state:
+    st.session_state["api_keys"] = load_api_keys()
+
+# ---------------------------------------------------------------------------
+# 사이드바 메뉴
+# ---------------------------------------------------------------------------
+
+st.sidebar.title("🏥 예라인 의원")
+st.sidebar.caption("AI 케이스 보고서 생성기")
+menu = st.sidebar.radio(
+    "메뉴",
+    ["🆕 새 케이스 생성", "📚 케이스 아카이브", "⚙️ 설정"],
+    label_visibility="collapsed",
+)
+
+# ---------------------------------------------------------------------------
+# ⚙️ 설정
+# ---------------------------------------------------------------------------
+
+if menu == "⚙️ 설정":
+    st.title("⚙️ API 키 설정")
+    st.info("API 키는 서버에 `api_keys.json`으로 저장됩니다. 한 번 저장하면 재입력이 필요 없습니다.")
+
+    keys = st.session_state["api_keys"]
+
+    anthropic_key = st.text_input(
+        "Anthropic API Key (Claude)",
+        value=keys.get("anthropic", ""),
+        type="password",
+        placeholder="sk-ant-...",
+    )
+    openai_key = st.text_input(
+        "OpenAI API Key (GPT-4o)",
+        value=keys.get("openai", ""),
+        type="password",
+        placeholder="sk-...",
+    )
+    google_key = st.text_input(
+        "Google API Key (Gemini)",
+        value=keys.get("google", ""),
+        type="password",
+        placeholder="AIza...",
+    )
+
+    if st.button("💾 저장", use_container_width=True, type="primary"):
+        new_keys = {"anthropic": anthropic_key, "openai": openai_key, "google": google_key}
+        save_api_keys(new_keys)
+        st.session_state["api_keys"] = new_keys
+        st.success("API 키가 저장되었습니다.")
+
+# ---------------------------------------------------------------------------
+# 🆕 새 케이스 생성
+# ---------------------------------------------------------------------------
+
+elif menu == "🆕 새 케이스 생성":
+    st.title("🆕 새 케이스 보고서 생성")
+
+    keys = st.session_state["api_keys"]
+
+    # 환자 정보 입력
+    with st.form("case_form"):
+        st.subheader("환자 정보")
+
+        c1, c2, c3 = st.columns(3)
+        age = c1.number_input("나이", min_value=1, max_value=120, value=40, step=1)
+        gender = c2.selectbox("성별", ["여성", "남성", "기타"])
+        category = c3.selectbox("시술 카테고리", CATEGORIES)
+
+        treatment_detail = st.text_area(
+            "시술 내용",
+            placeholder="예: 얼굴 전체 줄기세포 시술 (성장인자 포함)",
+            height=100,
+        )
+        materials = st.text_area(
+            "사용 재료 / 약품",
+            placeholder="예: 줄기세포 배양액 5mL, 히알루론산 필러 1cc",
+            height=80,
+        )
+        pre_condition = st.text_area(
+            "시술 전 상태",
+            placeholder="예: 얼굴 전반적 건조, 잔주름 다수, 탄력 저하",
+            height=80,
+        )
+        procedure_notes = st.text_area(
+            "시술 과정 특이사항",
+            placeholder="예: 마취 크림 도포 30분 후 시술, 통증 호소 없음",
+            height=80,
+        )
+        special_notes = st.text_area(
+            "기타 특이사항 / 주의사항",
+            placeholder="예: 임신 가능성 없음 확인, 항생제 알레르기 없음",
+            height=80,
         )
 
-    with st.expander("2. 회의 및 결정 사항", expanded=True):
-        agenda = st.text_area("회의 안건 (Agenda)")
-        decisions = st.text_area("결정 사항 (Decisions)")
+        st.subheader("생성할 보고서 선택")
+        col_a, col_b, col_c = st.columns(3)
+        use_claude = col_a.checkbox("Claude (Anthropic)", value=bool(keys.get("anthropic")))
+        use_openai = col_b.checkbox("GPT-4o (OpenAI)", value=bool(keys.get("openai")))
+        use_gemini = col_c.checkbox("Gemini (Google)", value=bool(keys.get("google")))
 
-    with st.expander("3. 수입 및 지출 내역", expanded=True):
-        updated_rows = []
-        for i, row in enumerate(st.session_state['finance_rows']):
-            st.markdown(f"**항목 {i+1}**")
-            c3, c4, c5 = st.columns([1, 1, 2])
-            etype    = c3.selectbox("구분", ["수입", "지출"],
-                                    index=["수입", "지출"].index(row["유형"]) if row["유형"] in ["수입", "지출"] else 1,
-                                    key=f"etype_{i}")
-            cat      = c4.text_input("항목명", value=row["항목"], placeholder="회비 / 강사비 / 식대 등", key=f"cat_{i}")
-            amt      = c5.number_input("금액(원)", min_value=0, step=1000, value=row["금액"], key=f"amt_{i}")
-            note_val = st.text_input("비고 (입금자명 등)", value=row["비고"], key=f"note_{i}")
-            scan_f   = st.file_uploader("스캔 이미지 첨부 (JPG, PNG, PDF)", type=["jpg", "jpeg", "png", "pdf"], key=f"scan_{i}")
-            updated_rows.append({"유형": etype, "항목": cat, "금액": amt, "비고": note_val, "스캔파일": scan_f})
-            if i < len(st.session_state['finance_rows']) - 1:
-                st.divider()
+        submitted = st.form_submit_button("🚀 보고서 생성", use_container_width=True, type="primary")
 
-        st.session_state['finance_rows'] = updated_rows
+    if submitted:
+        patient_info = {
+            "나이": f"{age}세",
+            "성별": gender,
+            "시술 카테고리": category,
+            "시술 내용": treatment_detail,
+            "사용 재료/약품": materials,
+            "시술 전 상태": pre_condition,
+            "시술 과정 특이사항": procedure_notes,
+            "기타 특이사항": special_notes,
+        }
 
-        bc1, bc2 = st.columns(2)
-        if bc1.button("➕ 항목 추가", use_container_width=True):
-            st.session_state['finance_rows'].append({"유형": "지출", "항목": "", "금액": 0, "비고": "", "스캔파일": None})
-            st.rerun()
-        if bc2.button("➖ 마지막 항목 삭제", use_container_width=True, disabled=len(st.session_state['finance_rows']) <= 1):
-            st.session_state['finance_rows'].pop()
-            st.rerun()
+        if not any([use_claude, use_openai, use_gemini]):
+            st.warning("최소 하나의 AI 모델을 선택하세요.")
+            st.stop()
 
-    if st.button("💾 회의록 및 내역 저장하기", use_container_width=True):
-        doc_filenames = []
-        for df_file in (doc_files or []):
-            fname = f"{date.strftime('%Y%m%d')}_doc_{df_file.name}"
-            with open(os.path.join(SCANS_DIR, fname), "wb") as f:
-                f.write(df_file.read())
-            doc_filenames.append(fname)
-        doc_filenames_str = "|".join(doc_filenames)
+        claude_result = ""
+        openai_result = ""
+        gemini_result = ""
+        errors = []
 
-        new_rows = []
-        for row in st.session_state['finance_rows']:
-            scan_filename = ""
-            if row["스캔파일"] is not None:
-                scan_filename = f"{date.strftime('%Y%m%d')}_{row['스캔파일'].name}"
-                with open(os.path.join(SCANS_DIR, scan_filename), "wb") as f:
-                    f.write(row["스캔파일"].read())
-            new_rows.append({
-                "날짜": date.strftime("%Y-%m-%d"), "주제": title, "장소": location,
-                "참석인원": attendees, "안건": agenda, "결정사항": decisions,
-                "유형": row["유형"], "항목": row["항목"], "금액": row["금액"],
-                "비고": row["비고"], "스캔파일": scan_filename,
-                "첨부서류": doc_filenames_str
-            })
-        st.session_state['df'] = pd.concat([st.session_state['df'], pd.DataFrame(new_rows)], ignore_index=True)
-        save_data(st.session_state['df'])
-        st.session_state['finance_rows'] = [{"유형": "지출", "항목": "", "금액": 0, "비고": "", "스캔파일": None}]
-        st.success("회의록과 내역이 성공적으로 기록되었습니다!")
-        st.rerun()
+        progress = st.progress(0, text="보고서 생성 중...")
+        step = 0
+        total = sum([use_claude, use_openai, use_gemini])
 
-# 2. 회의록 아카이브 (문서 형태 조회)
-elif menu == "📜 회의록 아카이브":
-    st.subheader("📚 역대 회의록 기록")
-    df = st.session_state['df']
+        if use_claude:
+            if not keys.get("anthropic"):
+                errors.append("Anthropic API 키가 없습니다. ⚙️ 설정에서 입력하세요.")
+            else:
+                with st.spinner("Claude 보고서 생성 중..."):
+                    try:
+                        claude_result = generate_claude_report(patient_info, keys["anthropic"])
+                    except Exception as e:
+                        errors.append(f"Claude 오류: {e}")
+            step += 1
+            progress.progress(step / total, text=f"진행 중 ({step}/{total})")
 
-    if "editing_idx" not in st.session_state:
-        st.session_state["editing_idx"] = None
+        if use_openai:
+            if not keys.get("openai"):
+                errors.append("OpenAI API 키가 없습니다. ⚙️ 설정에서 입력하세요.")
+            else:
+                with st.spinner("GPT-4o 보고서 생성 중..."):
+                    try:
+                        openai_result = generate_openai_report(patient_info, keys["openai"])
+                    except Exception as e:
+                        errors.append(f"GPT-4o 오류: {e}")
+            step += 1
+            progress.progress(step / total, text=f"진행 중 ({step}/{total})")
 
-    if not df.empty:
-        unique_seminars = df.drop_duplicates(subset=["날짜", "주제"]).reset_index()
+        if use_gemini:
+            if not keys.get("google"):
+                errors.append("Google API 키가 없습니다. ⚙️ 설정에서 입력하세요.")
+            else:
+                with st.spinner("Gemini 보고서 생성 중..."):
+                    try:
+                        gemini_result = generate_gemini_report(patient_info, keys["google"])
+                    except Exception as e:
+                        errors.append(f"Gemini 오류: {e}")
+            step += 1
+            progress.progress(step / total, text=f"완료!")
 
-        for pos, row in unique_seminars.iterrows():
-            orig_idx = row["index"]
-            with st.container():
-                st.markdown(f"### {row['날짜']} | {row['주제']}")
+        for err in errors:
+            st.error(err)
 
-                if st.session_state["editing_idx"] == orig_idx:
-                    with st.form(key=f"edit_form_{orig_idx}"):
-                        ec1, ec2 = st.columns(2)
-                        new_date      = ec1.text_input("날짜", value=row["날짜"])
-                        new_location  = ec2.text_input("장소", value=str(row["장소"]))
-                        new_title     = st.text_input("주제", value=str(row["주제"]))
-                        new_attendees = st.text_area("참석자 명단", value=str(row["참석인원"]))
-                        new_doc_files = st.file_uploader(
-                            "첨부 서류 교체 (사인 / 의결 동의안 · 여러 파일 가능, 비워두면 기존 유지)",
-                            type=["jpg", "jpeg", "png", "pdf"],
-                            accept_multiple_files=True,
+        # 병합
+        merged_result = ""
+        if claude_result and openai_result and keys.get("anthropic"):
+            with st.spinner("Claude + GPT-4o 병합 중..."):
+                try:
+                    merged_result = merge_reports(claude_result, openai_result, keys["anthropic"])
+                except Exception as e:
+                    st.warning(f"병합 오류: {e}")
+
+        # 결과 탭
+        tab_labels = []
+        tab_contents = []
+        if use_claude:
+            tab_labels.append("Claude")
+            tab_contents.append(claude_result)
+        if use_openai:
+            tab_labels.append("GPT-4o")
+            tab_contents.append(openai_result)
+        if use_gemini:
+            tab_labels.append("Gemini")
+            tab_contents.append(gemini_result)
+        if merged_result:
+            tab_labels.append("🔀 병합 버전")
+            tab_contents.append(merged_result)
+
+        if tab_labels:
+            tabs = st.tabs(tab_labels)
+            for tab, content in zip(tabs, tab_contents):
+                with tab:
+                    st.markdown(content if content else "_생성 실패_")
+
+        # 최종 편집 및 저장
+        st.divider()
+        st.subheader("최종 보고서 편집 및 저장")
+
+        default_final = merged_result or claude_result or openai_result or gemini_result
+        final_text = st.text_area("최종 버전 편집", value=default_final, height=400)
+
+        if st.button("💾 최종 버전 저장", use_container_width=True, type="primary"):
+            if not final_text.strip():
+                st.warning("저장할 내용이 없습니다.")
+            else:
+                case_data = {
+                    "category": category,
+                    "patient_info": patient_info,
+                    "reports": {
+                        "claude": claude_result,
+                        "openai": openai_result,
+                        "gemini": gemini_result,
+                        "merged": merged_result,
+                    },
+                    "final_report": final_text,
+                    "status": "완성",
+                }
+                saved = add_case(case_data)
+                st.success(f"케이스가 저장되었습니다. (ID: {saved['id']})")
+
+# ---------------------------------------------------------------------------
+# 📚 케이스 아카이브
+# ---------------------------------------------------------------------------
+
+elif menu == "📚 케이스 아카이브":
+    st.title("📚 케이스 아카이브")
+
+    cases = load_cases()
+
+    if not cases:
+        st.info("저장된 케이스가 없습니다.")
+        st.stop()
+
+    # 필터
+    col_f1, col_f2, col_f3 = st.columns(3)
+    filter_cat = col_f1.selectbox("카테고리 필터", ["전체"] + CATEGORIES)
+    filter_status = col_f2.selectbox("상태 필터", ["전체", "완성", "초안"])
+    search_text = col_f3.text_input("검색어", placeholder="내용 검색...")
+
+    filtered = cases
+    if filter_cat != "전체":
+        filtered = [c for c in filtered if c.get("category") == filter_cat]
+    if filter_status != "전체":
+        filtered = [c for c in filtered if c.get("status") == filter_status]
+    if search_text:
+        filtered = [
+            c for c in filtered
+            if search_text.lower() in json.dumps(c, ensure_ascii=False).lower()
+        ]
+
+    st.caption(f"총 {len(filtered)}건")
+
+    # 내보내기 / 가져오기
+    exp_col, imp_col = st.columns(2)
+    with exp_col:
+        export_data = json.dumps(filtered, ensure_ascii=False, indent=2)
+        st.download_button(
+            "📤 JSON 내보내기",
+            data=export_data,
+            file_name="cases_export.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+    with imp_col:
+        uploaded = st.file_uploader("📥 JSON 가져오기", type="json", label_visibility="collapsed")
+        if uploaded:
+            try:
+                imported = json.load(uploaded)
+                existing_ids = {c["id"] for c in load_cases()}
+                new_count = 0
+                all_cases = load_cases()
+                for case in imported:
+                    if case.get("id") not in existing_ids:
+                        all_cases.append(case)
+                        new_count += 1
+                from case_storage import save_cases
+                save_cases(all_cases)
+                st.success(f"{new_count}건 가져왔습니다. 페이지를 새로고침하세요.")
+            except Exception as e:
+                st.error(f"가져오기 실패: {e}")
+
+    st.divider()
+
+    # 케이스 목록
+    if "editing_case_id" not in st.session_state:
+        st.session_state["editing_case_id"] = None
+
+    for case in reversed(filtered):
+        case_id = case["id"]
+        created = case.get("created_at", "")[:16].replace("T", " ")
+        cat = case.get("category", "기타")
+        status = case.get("status", "완성")
+        info = case.get("patient_info", {})
+        label = f"**{created}** | {cat} | {status} | {info.get('나이', '')} {info.get('성별', '')}"
+
+        with st.expander(label):
+            if st.session_state["editing_case_id"] == case_id:
+                # 편집 모드
+                new_final = st.text_area(
+                    "최종 보고서 편집",
+                    value=case.get("final_report", ""),
+                    height=300,
+                    key=f"edit_text_{case_id}",
+                )
+                new_status = st.selectbox(
+                    "상태",
+                    ["완성", "초안"],
+                    index=0 if status == "완성" else 1,
+                    key=f"edit_status_{case_id}",
+                )
+                save_c, cancel_c = st.columns(2)
+                if save_c.button("💾 저장", key=f"save_{case_id}", use_container_width=True, type="primary"):
+                    updated = dict(case)
+                    updated["final_report"] = new_final
+                    updated["status"] = new_status
+                    update_case(case_id, updated)
+                    st.session_state["editing_case_id"] = None
+                    st.success("저장되었습니다.")
+                    st.rerun()
+                if cancel_c.button("✖ 취소", key=f"cancel_{case_id}", use_container_width=True):
+                    st.session_state["editing_case_id"] = None
+                    st.rerun()
+            else:
+                # 보기 모드
+                st.markdown("**최종 보고서**")
+                st.markdown(case.get("final_report", "_내용 없음_"))
+
+                # 개별 AI 결과
+                reports = case.get("reports", {})
+                if any(reports.values()):
+                    with st.container():
+                        sub_tabs = st.tabs(
+                            [k for k, v in [
+                                ("Claude", reports.get("claude")),
+                                ("GPT-4o", reports.get("openai")),
+                                ("Gemini", reports.get("gemini")),
+                                ("병합", reports.get("merged")),
+                            ] if v]
                         )
-                        new_agenda    = st.text_area("안건", value=str(row["안건"]))
-                        new_decisions = st.text_area("결정사항", value=str(row["결정사항"]))
+                        tab_idx = 0
+                        for key_label, content in [
+                            ("Claude", reports.get("claude")),
+                            ("GPT-4o", reports.get("openai")),
+                            ("Gemini", reports.get("gemini")),
+                            ("병합", reports.get("merged")),
+                        ]:
+                            if content:
+                                with sub_tabs[tab_idx]:
+                                    st.markdown(content)
+                                tab_idx += 1
 
-                        fc1, fc2 = st.columns(2)
-                        save_btn   = fc1.form_submit_button("💾 저장", use_container_width=True, type="primary")
-                        cancel_btn = fc2.form_submit_button("✖ 취소", use_container_width=True)
-
-                    if save_btn:
-                        st.session_state['df'].loc[orig_idx, "날짜"]     = new_date
-                        st.session_state['df'].loc[orig_idx, "장소"]     = new_location
-                        st.session_state['df'].loc[orig_idx, "주제"]     = new_title
-                        st.session_state['df'].loc[orig_idx, "참석인원"] = new_attendees
-                        st.session_state['df'].loc[orig_idx, "안건"]     = new_agenda
-                        st.session_state['df'].loc[orig_idx, "결정사항"] = new_decisions
-                        if new_doc_files:
-                            saved = []
-                            for f in new_doc_files:
-                                fname = f"{new_date.replace('-', '')}_doc_{f.name}"
-                                with open(os.path.join(SCANS_DIR, fname), "wb") as fp:
-                                    fp.write(f.read())
-                                saved.append(fname)
-                            st.session_state['df'].loc[orig_idx, "첨부서류"] = "|".join(saved)
-                        save_data(st.session_state['df'])
-                        st.session_state["editing_idx"] = None
-                        st.success("수정되었습니다.")
-                        st.rerun()
-                    if cancel_btn:
-                        st.session_state["editing_idx"] = None
-                        st.rerun()
-
-                else:
-                    st.info(f"📍 **장소:** {row['장소']}  |  👥 **참석자:** {row['참석인원']}")
-                    st.write(f"**📝 안건:** {row['안건']}")
-                    st.write(f"**✅ 결정사항:** {row['결정사항']}")
-
-                    doc_val = row.get("첨부서류", "")
-                    if pd.notna(doc_val) and doc_val:
-                        st.markdown("**📎 첨부 서류 (사인 / 의결 동의안)**")
-                        doc_cols = st.columns(3)
-                        for di, fname in enumerate(str(doc_val).split("|")):
-                            if not fname:
-                                continue
-                            fpath = os.path.join(SCANS_DIR, fname)
-                            if os.path.exists(fpath) and fname.lower().endswith((".jpg", ".jpeg", ".png")):
-                                doc_cols[di % 3].image(fpath, caption=fname, use_container_width=True)
-                            elif os.path.exists(fpath):
-                                doc_cols[di % 3].caption(f"📄 {fname}")
-
-                    if pd.notna(row.get("스캔파일")) and row.get("스캔파일"):
-                        fpath = os.path.join(SCANS_DIR, row["스캔파일"])
-                        if os.path.exists(fpath) and row["스캔파일"].lower().endswith((".jpg", ".jpeg", ".png")):
-                            st.image(fpath, caption=row["스캔파일"], width=300)
-                        elif os.path.exists(fpath):
-                            st.caption(f"📎 영수증: {row['스캔파일']}")
-
-                    if st.button("✏️ 수정", key=f"edit_btn_{orig_idx}"):
-                        st.session_state["editing_idx"] = orig_idx
-                        st.rerun()
-
-                st.divider()
-    else:
-        st.info("기록된 회의록이 없습니다.")
-
-# 3. 재무 엑셀 리포트 (엑셀 형식)
-elif menu == "💰 재무 엑셀 리포트":
-    st.subheader("📊 수입 및 지출 재무 제표 (Excel)")
-    df = st.session_state['df']
-
-    with st.expander("🏦 기초 이월금 설정", expanded=True):
-        c_carry, c_note = st.columns([1, 2])
-        carryover = c_carry.number_input("전기 이월금 (원)", min_value=0, step=1000, value=0)
-        c_note.caption("이전 회계 기간에서 넘어온 잔액을 입력하세요.")
-
-    if not df.empty:
-        st.write("### 🟢 수입 내역 (Incomes)")
-        income_df = df[df["유형"] == "수입"][["날짜", "항목", "금액", "비고"]]
-        st.table(income_df)
-
-        st.write("### 🔴 지출 내역 (Expenses)")
-        expense_df = df[df["유형"] == "지출"][["날짜", "항목", "금액", "비고"]]
-        st.table(expense_df)
-
-        total_in = income_df["금액"].sum()
-        total_out = expense_df["금액"].sum()
-        balance = carryover + total_in - total_out
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("전기 이월금", f"{carryover:,}원")
-        c2.metric("총 수입", f"{total_in:,}원")
-        c3.metric("총 지출", f"{total_out:,}원")
-        c4.metric("현재 잔액", f"{balance:,}원", delta=f"{balance - carryover:,}원")
-
-        csv = df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button("📤 전체 내역 엑셀로 내보내기", csv, "seminar_finance_report.csv", "text/csv")
-    else:
-        st.info("금융 내역이 없습니다.")
+                btn_c1, btn_c2 = st.columns(2)
+                if btn_c1.button("✏️ 편집", key=f"edit_{case_id}", use_container_width=True):
+                    st.session_state["editing_case_id"] = case_id
+                    st.rerun()
+                if btn_c2.button("🗑️ 삭제", key=f"del_{case_id}", use_container_width=True):
+                    delete_case(case_id)
+                    st.success("삭제되었습니다.")
+                    st.rerun()
