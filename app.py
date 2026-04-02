@@ -36,15 +36,25 @@ API_KEYS_FILE = "api_keys.json"
 
 
 def load_api_keys() -> dict:
+    keys = {"anthropic": "", "openai": "", "google": ""}
     if os.path.exists(API_KEYS_FILE):
         with open(API_KEYS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"anthropic": "", "openai": "", "google": ""}
+            keys.update(json.load(f))
+    # Fall back to environment variables when no key is stored
+    if not keys["anthropic"]:
+        keys["anthropic"] = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not keys["openai"]:
+        keys["openai"] = os.environ.get("OPENAI_API_KEY", "")
+    if not keys["google"]:
+        keys["google"] = os.environ.get("GOOGLE_API_KEY", "")
+    return keys
 
 
 def save_api_keys(keys: dict) -> None:
+    # Strip whitespace to prevent copy-paste errors causing auth failures
+    cleaned = {k: v.strip() for k, v in keys.items()}
     with open(API_KEYS_FILE, "w", encoding="utf-8") as f:
-        json.dump(keys, f, ensure_ascii=False, indent=2)
+        json.dump(cleaned, f, ensure_ascii=False, indent=2)
 
 
 if "api_keys" not in st.session_state:
@@ -92,7 +102,11 @@ if menu == "⚙️ 설정":
     )
 
     if st.button("💾 저장", use_container_width=True, type="primary"):
-        new_keys = {"anthropic": anthropic_key, "openai": openai_key, "google": google_key}
+        new_keys = {
+            "anthropic": anthropic_key.strip(),
+            "openai": openai_key.strip(),
+            "google": google_key.strip(),
+        }
         save_api_keys(new_keys)
         st.session_state["api_keys"] = new_keys
         st.success("API 키가 저장되었습니다.")
