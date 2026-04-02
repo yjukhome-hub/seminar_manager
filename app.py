@@ -2,7 +2,9 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import os
-from case_report_generator import stream_case_report
+from case_report_generator import (
+    PROVIDER_LABELS, STREAM_FUNCS, build_user_prompt, generate_all_parallel,
+)
 
 # 페이지 설정
 st.set_page_config(page_title="대한 첨단재생의료 연구회", layout="wide")
@@ -244,8 +246,9 @@ elif menu == "💰 재무 엑셀 리포트":
 # 4. AI 케이스 보고서 생성기
 elif menu == "🏥 AI 케이스 보고서 생성기":
     st.subheader("🤖 예라인 의원 AI 케이스 보고서 생성기")
-    st.caption("원장님의 진료 철학과 글쓰기 스타일을 반영하여 케이스 보고서를 자동으로 생성합니다.")
+    st.caption("Claude · GPT-4o · Gemini 중 원하는 AI를 선택하거나 전체 비교 결과를 한 번에 받아보세요.")
 
+    # ── 환자 정보 입력 ──────────────────────────────
     with st.expander("1. 환자 기본 정보", expanded=True):
         c1, c2 = st.columns(2)
         patient_age = c1.text_input("나이", placeholder="예: 40대 후반")
@@ -279,71 +282,140 @@ elif menu == "🏥 AI 케이스 보고서 생성기":
 
     st.divider()
 
-    api_key = st.text_input(
-        "Anthropic API 키",
-        type="password",
-        placeholder="sk-ant-...",
-        help="ANTHROPIC_API_KEY 환경 변수가 설정되어 있으면 비워도 됩니다.",
-    )
+    # ── AI 선택 ──────────────────────────────────
+    st.markdown("#### 🧠 AI 선택")
+    ai_cols = st.columns(3)
+    use_claude = ai_cols[0].checkbox("🟣 Claude (Anthropic)", value=True)
+    use_openai = ai_cols[1].checkbox("🟢 GPT-4o (OpenAI)", value=False)
+    use_gemini = ai_cols[2].checkbox("🔵 Gemini (Google)", value=False)
 
-    if "generated_report" not in st.session_state:
-        st.session_state["generated_report"] = ""
+    selected_providers = []
+    if use_claude:
+        selected_providers.append("claude")
+    if use_openai:
+        selected_providers.append("openai")
+    if use_gemini:
+        selected_providers.append("gemini")
+
+    # ── API 키 입력 ───────────────────────────────
+    with st.expander("🔑 API 키 설정", expanded=bool(selected_providers)):
+        api_keys: dict = {}
+        if use_claude:
+            api_keys["claude"] = st.text_input(
+                "Anthropic API 키", type="password", placeholder="sk-ant-...",
+                help="ANTHROPIC_API_KEY 환경 변수로 대체 가능",
+                key="key_claude",
+            )
+        if use_openai:
+            api_keys["openai"] = st.text_input(
+                "OpenAI API 키", type="password", placeholder="sk-...",
+                help="OPENAI_API_KEY 환경 변수로 대체 가능",
+                key="key_openai",
+            )
+        if use_gemini:
+            api_keys["gemini"] = st.text_input(
+                "Google AI API 키", type="password", placeholder="AIza...",
+                help="GOOGLE_API_KEY 환경 변수로 대체 가능",
+                key="key_gemini",
+            )
+
+    # ── 세션 상태 초기화 ──────────────────────────
+    if "cr_results" not in st.session_state:
+        st.session_state["cr_results"] = {}
 
     col_gen, col_clear = st.columns([3, 1])
     generate_btn = col_gen.button("✨ 케이스 보고서 생성하기", use_container_width=True, type="primary")
     clear_btn = col_clear.button("🗑️ 초기화", use_container_width=True)
 
     if clear_btn:
-        st.session_state["generated_report"] = ""
+        st.session_state["cr_results"] = {}
         st.rerun()
 
     if generate_btn:
+        import os
+
         if not patient_age or not chief_complaint or not diagnosis or not treatment:
             st.warning("나이, 주요 고민, 진단, 시술 내용은 필수 입력 항목입니다.")
+        elif not selected_providers:
+            st.warning("AI를 한 개 이상 선택해 주세요.")
         else:
-            import anthropic as _anthropic
-            import os
+            # 환경 변수 폴백 처리
+            resolved_keys: dict = {}
+            for p in selected_providers:
+                key_input = api_keys.get(p, "").strip()
+                env_map = {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY", "gemini": "GOOGLE_API_KEY"}
+                resolved = key_input or os.environ.get(env_map[p], "")
+                resolved_keys[p] = resolved or None
 
-            if api_key:
-                os.environ["ANTHROPIC_API_KEY"] = api_key
-
-            if not os.environ.get("ANTHROPIC_API_KEY"):
-                st.error("Anthropic API 키를 입력하거나 환경 변수 ANTHROPIC_API_KEY를 설정해 주세요.")
+            missing = [PROVIDER_LABELS[p] for p in selected_providers if not resolved_keys[p]]
+            if missing:
+                st.error(f"API 키가 없는 AI: {', '.join(missing)}")
             else:
-                st.session_state["generated_report"] = ""
-                report_placeholder = st.empty()
-                status = st.status("케이스 보고서를 생성하고 있습니다...", expanded=True)
-                try:
-                    collected = ""
-                    for chunk in stream_case_report(
-                        patient_age=patient_age,
-                        patient_gender=patient_gender,
-                        chief_complaint=chief_complaint,
-                        diagnosis=diagnosis,
-                        treatment=treatment,
-                        additional_notes=additional_notes,
-                    ):
-                        collected += chunk
-                        report_placeholder.markdown(collected)
-                    st.session_state["generated_report"] = collected
-                    status.update(label="✅ 생성 완료!", state="complete", expanded=False)
-                except _anthropic.AuthenticationError:
-                    status.update(label="❌ 오류 발생", state="error", expanded=False)
-                    st.error("API 키가 유효하지 않습니다. 올바른 Anthropic API 키를 입력해 주세요.")
-                except _anthropic.APIConnectionError:
-                    status.update(label="❌ 오류 발생", state="error", expanded=False)
-                    st.error("네트워크 연결 오류가 발생했습니다. 인터넷 연결을 확인해 주세요.")
-                except Exception as e:
-                    status.update(label="❌ 오류 발생", state="error", expanded=False)
-                    st.error(f"오류가 발생했습니다: {str(e)}")
+                user_prompt = build_user_prompt(
+                    patient_age, patient_gender, chief_complaint,
+                    diagnosis, treatment, additional_notes,
+                )
+                st.session_state["cr_results"] = {}
 
-    if st.session_state["generated_report"]:
+                # ── 단일 AI: 실시간 스트리밍 ──────────────
+                if len(selected_providers) == 1:
+                    provider = selected_providers[0]
+                    placeholder = st.empty()
+                    status = st.status(
+                        f"{PROVIDER_LABELS[provider]}가 보고서를 생성하고 있습니다...",
+                        expanded=True,
+                    )
+                    try:
+                        collected = ""
+                        for chunk in STREAM_FUNCS[provider](user_prompt, resolved_keys[provider]):
+                            collected += chunk
+                            placeholder.markdown(collected)
+                        st.session_state["cr_results"][provider] = collected
+                        status.update(label="✅ 생성 완료!", state="complete", expanded=False)
+                    except Exception as e:
+                        status.update(label="❌ 오류 발생", state="error", expanded=False)
+                        st.error(f"{PROVIDER_LABELS[provider]} 오류: {e}")
+
+                # ── 복수 AI: 병렬 생성 후 탭 표시 ──────────
+                else:
+                    labels = [PROVIDER_LABELS[p] for p in selected_providers]
+                    with st.spinner(f"{' · '.join(labels)} 동시 생성 중... (잠시 기다려 주세요)"):
+                        results = generate_all_parallel(selected_providers, user_prompt, resolved_keys)
+                    st.session_state["cr_results"] = results
+
+                    errors = {p: v for p, v in results.items() if isinstance(v, Exception)}
+                    if errors:
+                        for p, err in errors.items():
+                            st.error(f"{PROVIDER_LABELS[p]} 오류: {err}")
+
+    # ── 결과 표시 ─────────────────────────────────
+    results = st.session_state.get("cr_results", {})
+    success_results = {p: v for p, v in results.items() if isinstance(v, str)}
+
+    if success_results:
         st.divider()
         st.markdown("### 📋 생성된 케이스 보고서")
-        st.markdown(st.session_state["generated_report"])
-        st.download_button(
-            label="📥 보고서 다운로드 (.txt)",
-            data=st.session_state["generated_report"].encode("utf-8"),
-            file_name=f"케이스보고서_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-            mime="text/plain",
-        )
+
+        if len(success_results) == 1:
+            provider, text = next(iter(success_results.items()))
+            st.caption(f"생성 AI: {PROVIDER_LABELS[provider]}")
+            st.markdown(text)
+            st.download_button(
+                label="📥 보고서 다운로드 (.txt)",
+                data=text.encode("utf-8"),
+                file_name=f"케이스보고서_{provider}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                mime="text/plain",
+            )
+        else:
+            tab_labels = [f"{PROVIDER_LABELS[p]}" for p in success_results]
+            tabs = st.tabs(tab_labels)
+            for tab, (provider, text) in zip(tabs, success_results.items()):
+                with tab:
+                    st.markdown(text)
+                    st.download_button(
+                        label=f"📥 {PROVIDER_LABELS[provider]} 보고서 다운로드",
+                        data=text.encode("utf-8"),
+                        file_name=f"케이스보고서_{provider}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                        mime="text/plain",
+                        key=f"dl_{provider}",
+                    )

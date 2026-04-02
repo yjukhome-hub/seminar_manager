@@ -1,10 +1,11 @@
 """
 예라인 의원 AI 케이스 보고서 생성기
-Claude API를 활용하여 원장님의 글쓰기 스타일과 의학적 가이드라인을 반영한
-케이스 보고서를 자동 생성합니다.
+Claude / GPT-4o / Gemini 세 가지 AI를 단일 또는 동시에 사용하여
+원장님의 글쓰기 스타일과 의학적 가이드라인을 반영한 케이스 보고서를 생성합니다.
 """
 
-import anthropic
+from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 SYSTEM_PROMPT = """당신은 예라인 의원의 브랜드 매니저이자 의학 전문 카피라이터입니다.
 
@@ -50,8 +51,18 @@ SYSTEM_PROMPT = """당신은 예라인 의원의 브랜드 매니저이자 의�
 - 원장님의 진료 철학(근본적 재생, 구조적 접근)이 일관되게 녹아 있어야 합니다
 - 반드시 한국어로 작성합니다"""
 
+PROVIDER_LABELS = {
+    "claude": "Claude (Anthropic)",
+    "openai": "GPT-4o (OpenAI)",
+    "gemini": "Gemini (Google)",
+}
 
-def generate_case_report(
+
+# ─────────────────────────────────────────────
+# 프롬프트 빌더
+# ─────────────────────────────────────────────
+
+def build_user_prompt(
     patient_age: str,
     patient_gender: str,
     chief_complaint: str,
@@ -59,47 +70,34 @@ def generate_case_report(
     treatment: str,
     additional_notes: str = "",
 ) -> str:
-    """
-    케이스 보고서를 생성하고 완성된 텍스트를 반환합니다.
-    """
-    client = anthropic.Anthropic()
-
-    user_prompt = _build_user_prompt(
-        patient_age, patient_gender, chief_complaint,
-        diagnosis, treatment, additional_notes
+    prompt = (
+        f"다음 정보를 바탕으로 예라인 의원의 케이스 보고서를 작성해 주세요.\n\n"
+        f"[환자 정보]\n"
+        f"- 나이/성별: {patient_age}세 {patient_gender}\n"
+        f"- 주요 고민 및 증상: {chief_complaint}\n\n"
+        f"[원장님의 진단]\n{diagnosis}\n\n"
+        f"[시술 내용]\n{treatment}"
     )
-
-    with client.messages.stream(
-        model="claude-opus-4-6",
-        max_tokens=4096,
-        thinking={"type": "adaptive"},
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_prompt}],
-    ) as stream:
-        full_text = ""
-        for text in stream.text_stream:
-            full_text += text
-        return full_text
-
-
-def stream_case_report(
-    patient_age: str,
-    patient_gender: str,
-    chief_complaint: str,
-    diagnosis: str,
-    treatment: str,
-    additional_notes: str = "",
-):
-    """
-    케이스 보고서를 스트리밍으로 생성합니다 (Streamlit용 제너레이터).
-    """
-    client = anthropic.Anthropic()
-
-    user_prompt = _build_user_prompt(
-        patient_age, patient_gender, chief_complaint,
-        diagnosis, treatment, additional_notes
+    if additional_notes.strip():
+        prompt += f"\n\n[추가 참고 사항]\n{additional_notes}"
+    prompt += (
+        "\n\n위 정보를 바탕으로, 예라인 의원의 글쓰기 스타일에 맞게 케이스 보고서를 작성해 주세요.\n"
+        "반드시 다음 구조를 따라주세요:\n"
+        "1. 도입: 환자 상황 및 해부학적 원인 분석\n"
+        "2. 전개: 시술 원리 설명 (비유 포함, Layer by Layer 강조)\n"
+        "3. 본론: 시술 내용 상세 기술\n"
+        "4. 결말: 진료 철학 및 생활 습관 팁"
     )
+    return prompt
 
+
+# ─────────────────────────────────────────────
+# 스트리밍 제너레이터 (단일 AI 선택 시)
+# ─────────────────────────────────────────────
+
+def stream_claude(user_prompt: str, api_key: str | None = None):
+    import anthropic
+    client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
     with client.messages.stream(
         model="claude-opus-4-6",
         max_tokens=4096,
@@ -111,39 +109,87 @@ def stream_case_report(
             yield text
 
 
-def _build_user_prompt(
-    patient_age: str,
-    patient_gender: str,
-    chief_complaint: str,
-    diagnosis: str,
-    treatment: str,
-    additional_notes: str,
-) -> str:
-    prompt = f"""다음 정보를 바탕으로 예라인 의원의 케이스 보고서를 작성해 주세요.
+def stream_openai(user_prompt: str, api_key: str | None = None):
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key) if api_key else OpenAI()
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        max_tokens=4096,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        stream=True,
+    )
+    for chunk in response:
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
 
-[환자 정보]
-- 나이/성별: {patient_age}세 {patient_gender}
-- 주요 고민 및 증상: {chief_complaint}
 
-[원장님의 진단]
-{diagnosis}
+def stream_gemini(user_prompt: str, api_key: str | None = None):
+    import google.generativeai as genai
+    if api_key:
+        genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(
+        model_name="gemini-1.5-pro",
+        system_instruction=SYSTEM_PROMPT,
+    )
+    response = model.generate_content(user_prompt, stream=True)
+    for chunk in response:
+        if chunk.text:
+            yield chunk.text
 
-[시술 내용]
-{treatment}"""
 
-    if additional_notes.strip():
-        prompt += f"""
+STREAM_FUNCS = {
+    "claude": stream_claude,
+    "openai": stream_openai,
+    "gemini": stream_gemini,
+}
 
-[추가 참고 사항]
-{additional_notes}"""
 
-    prompt += """
+# ─────────────────────────────────────────────
+# 일괄(비스트리밍) 생성 — 병렬 비교 모드 전용
+# ─────────────────────────────────────────────
 
-위 정보를 바탕으로, 예라인 의원의 글쓰기 스타일에 맞게 케이스 보고서를 작성해 주세요.
-반드시 다음 구조를 따라주세요:
-1. 도입: 환자 상황 및 해부학적 원인 분석
-2. 전개: 시술 원리 설명 (비유 포함, Layer by Layer 강조)
-3. 본론: 시술 내용 상세 기술
-4. 결말: 진료 철학 및 생활 습관 팁"""
+def _generate_claude(user_prompt: str, api_key: str | None) -> str:
+    return "".join(stream_claude(user_prompt, api_key))
 
-    return prompt
+
+def _generate_openai(user_prompt: str, api_key: str | None) -> str:
+    return "".join(stream_openai(user_prompt, api_key))
+
+
+def _generate_gemini(user_prompt: str, api_key: str | None) -> str:
+    return "".join(stream_gemini(user_prompt, api_key))
+
+
+_GENERATE_FUNCS = {
+    "claude": _generate_claude,
+    "openai": _generate_openai,
+    "gemini": _generate_gemini,
+}
+
+
+def generate_all_parallel(
+    providers: list[str],
+    user_prompt: str,
+    api_keys: dict[str, str | None],
+) -> dict[str, str | Exception]:
+    """
+    선택된 AI 여러 개를 병렬로 실행합니다.
+    반환값: {"claude": "...", "openai": "...", "gemini": "..."} 또는 Exception
+    """
+    results: dict[str, str | Exception] = {}
+    with ThreadPoolExecutor(max_workers=len(providers)) as executor:
+        future_to_provider = {
+            executor.submit(_GENERATE_FUNCS[p], user_prompt, api_keys.get(p)): p
+            for p in providers
+        }
+        for future in as_completed(future_to_provider):
+            provider = future_to_provider[future]
+            try:
+                results[provider] = future.result()
+            except Exception as e:
+                results[provider] = e
+    return results
