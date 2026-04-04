@@ -13,6 +13,7 @@ import streamlit as st
 from case_storage import CATEGORIES, add_case, delete_case, load_cases, update_case
 from case_report_generator import (
     generate_claude_report,
+    generate_essay,
     generate_gemini_report,
     generate_openai_report,
     merge_reports,
@@ -142,10 +143,16 @@ elif menu == "🆕 새 케이스 생성":
         )
 
         st.subheader("생성할 보고서 선택")
+        use_essay = st.checkbox(
+            "✍️ 예라인 케이스 에세이 (Claude — 메인)",
+            value=bool(keys.get("anthropic")),
+            help="예라인 페르소나 시스템 프롬프트로 SNS/블로그용 에세이를 생성합니다.",
+        )
+        st.caption("─ 내부 참고용 보고서 (선택) ─")
         col_a, col_b, col_c = st.columns(3)
-        use_claude = col_a.checkbox("Claude (Anthropic)", value=bool(keys.get("anthropic")))
-        use_openai = col_b.checkbox("GPT-4o (OpenAI)", value=bool(keys.get("openai")))
-        use_gemini = col_c.checkbox("Gemini (Google)", value=bool(keys.get("google")))
+        use_claude = col_a.checkbox("Claude 보고서", value=False)
+        use_openai = col_b.checkbox("GPT-4o 보고서", value=bool(keys.get("openai")))
+        use_gemini = col_c.checkbox("Gemini 보고서", value=bool(keys.get("google")))
 
         submitted = st.form_submit_button("🚀 보고서 생성", use_container_width=True, type="primary")
 
@@ -161,10 +168,11 @@ elif menu == "🆕 새 케이스 생성":
             "기타 특이사항": special_notes,
         }
 
-        if not any([use_claude, use_openai, use_gemini]):
-            st.warning("최소 하나의 AI 모델을 선택하세요.")
+        if not any([use_essay, use_claude, use_openai, use_gemini]):
+            st.warning("최소 하나의 생성 옵션을 선택하세요.")
             st.stop()
 
+        essay_result = ""
         claude_result = ""
         openai_result = ""
         gemini_result = ""
@@ -172,7 +180,19 @@ elif menu == "🆕 새 케이스 생성":
 
         progress = st.progress(0, text="보고서 생성 중...")
         step = 0
-        total = sum([use_claude, use_openai, use_gemini])
+        total = sum([use_essay, use_claude, use_openai, use_gemini])
+
+        if use_essay:
+            if not keys.get("anthropic"):
+                errors.append("Anthropic API 키가 없습니다. ⚙️ 설정에서 입력하세요.")
+            else:
+                with st.spinner("✍️ 예라인 에세이 작성 중..."):
+                    try:
+                        essay_result = generate_essay(patient_info, keys["anthropic"])
+                    except Exception as e:
+                        errors.append(f"에세이 생성 오류: {e}")
+            step += 1
+            progress.progress(step / total, text=f"진행 중 ({step}/{total})")
 
         if use_claude:
             if not keys.get("anthropic"):
@@ -225,14 +245,17 @@ elif menu == "🆕 새 케이스 생성":
         # 결과 탭
         tab_labels = []
         tab_contents = []
+        if essay_result:
+            tab_labels.append("✍️ 예라인 에세이")
+            tab_contents.append(essay_result)
         if use_claude:
-            tab_labels.append("Claude")
+            tab_labels.append("Claude 보고서")
             tab_contents.append(claude_result)
         if use_openai:
-            tab_labels.append("GPT-4o")
+            tab_labels.append("GPT-4o 보고서")
             tab_contents.append(openai_result)
         if use_gemini:
-            tab_labels.append("Gemini")
+            tab_labels.append("Gemini 보고서")
             tab_contents.append(gemini_result)
         if merged_result:
             tab_labels.append("🔀 병합 버전")
@@ -248,7 +271,7 @@ elif menu == "🆕 새 케이스 생성":
         st.divider()
         st.subheader("최종 보고서 편집 및 저장")
 
-        default_final = merged_result or claude_result or openai_result or gemini_result
+        default_final = essay_result or merged_result or claude_result or openai_result or gemini_result
         final_text = st.text_area("최종 버전 편집", value=default_final, height=400)
 
         if st.button("💾 최종 버전 저장", use_container_width=True, type="primary"):
@@ -259,6 +282,7 @@ elif menu == "🆕 새 케이스 생성":
                     "category": category,
                     "patient_info": patient_info,
                     "reports": {
+                        "essay": essay_result,
                         "claude": claude_result,
                         "openai": openai_result,
                         "gemini": gemini_result,
@@ -380,26 +404,19 @@ elif menu == "📚 케이스 아카이브":
                 # 개별 AI 결과
                 reports = case.get("reports", {})
                 if any(reports.values()):
-                    with st.container():
-                        sub_tabs = st.tabs(
-                            [k for k, v in [
-                                ("Claude", reports.get("claude")),
-                                ("GPT-4o", reports.get("openai")),
-                                ("Gemini", reports.get("gemini")),
-                                ("병합", reports.get("merged")),
-                            ] if v]
-                        )
-                        tab_idx = 0
-                        for key_label, content in [
-                            ("Claude", reports.get("claude")),
-                            ("GPT-4o", reports.get("openai")),
-                            ("Gemini", reports.get("gemini")),
-                            ("병합", reports.get("merged")),
-                        ]:
-                            if content:
-                                with sub_tabs[tab_idx]:
-                                    st.markdown(content)
-                                tab_idx += 1
+                    all_report_tabs = [
+                        ("✍️ 예라인 에세이", reports.get("essay")),
+                        ("Claude 보고서", reports.get("claude")),
+                        ("GPT-4o 보고서", reports.get("openai")),
+                        ("Gemini 보고서", reports.get("gemini")),
+                        ("🔀 병합", reports.get("merged")),
+                    ]
+                    visible = [(label, content) for label, content in all_report_tabs if content]
+                    if visible:
+                        sub_tabs = st.tabs([label for label, _ in visible])
+                        for i, (_, content) in enumerate(visible):
+                            with sub_tabs[i]:
+                                st.markdown(content)
 
                 btn_c1, btn_c2 = st.columns(2)
                 if btn_c1.button("✏️ 편집", key=f"edit_{case_id}", use_container_width=True):
